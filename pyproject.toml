@@ -1,0 +1,41 @@
+[tool.poetry]
+name = "rawgui"
+version = "0.1.0"
+description = "A TUI version of NiceGUI - run NiceGUI apps in the terminal"
+readme = "README.md"
+license = "MIT"
+authors = ["RawGUI Contributors"]
+packages = [{include = "rawgui"}]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<4.0"
+blessed = "^1.20.0"
+watchfiles = "^0.21.0"
+pexpect = "^4.9.0"
+pyte = "^0.8.2"
+Pillow = "^10.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+pytest-asyncio = "^0.23.0"
+selenium = "^4.0.0"
+nicegui = "^2.0.0"
+ruff = "^0.4.0"
+
+[tool.poetry.scripts]
+rawgui = "rawgui.main:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
