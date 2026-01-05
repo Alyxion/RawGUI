@@ -56,6 +56,7 @@ from .elements.scroll import ScrollArea, Expansion
 from .elements.tree import Tree
 from .elements.layout import Header, Footer, Drawer, LeftDrawer, RightDrawer, PageSticky, Grid, Splitter
 from .elements.chat import ChatMessage, Log
+from .elements.native_widget import NativeWidget
 
 # Functions (decorators, timers, etc.)
 from .functions import (
@@ -663,6 +664,32 @@ def log(max_lines: Optional[int] = None) -> Log:
     return Log(max_lines=max_lines)
 
 
+def native_widget(
+    widget_factory: Callable,
+    *,
+    width: int = 200,
+    height: int = 100,
+) -> NativeWidget:
+    """Create a placeholder for a native Tkinter widget.
+
+    This is for exceptional cases where RawGUI doesn't provide an equivalent.
+    99% of UI should use standard RawGUI elements.
+
+    Args:
+        widget_factory: Callable that receives a parent Frame and returns a Tkinter widget
+        width: Width in pixels
+        height: Height in pixels
+
+    Example:
+        def create_scale(parent):
+            import tkinter as tk
+            return tk.Scale(parent, from_=0, to=100, orient=tk.HORIZONTAL)
+
+        ui.native_widget(create_scale, width=200, height=50)
+    """
+    return NativeWidget(widget_factory, width=width, height=height)
+
+
 def circular_progress(
     value: Optional[float] = None,
     *,
@@ -765,6 +792,7 @@ __all__ = [
     "tree",
     "chat_message",
     "log",
+    "native_widget",
     # Element classes
     "Label",
     "Button",
@@ -828,4 +856,5 @@ __all__ = [
     "Tree",
     "ChatMessage",
     "Log",
+    "NativeWidget",
 ]

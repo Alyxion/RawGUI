@@ -16,6 +16,7 @@ from .layout import Header, Footer, Drawer, LeftDrawer, RightDrawer, PageSticky,
 from .link import Code, Html, Link, Markdown
 from .menu import ContextMenu, Menu, MenuItem, MenuSeparator
 from .navbar import NavigationBar
+from .native_widget import NativeWidget
 from .number import ColorPicker, DatePicker, Number, TimePicker
 from .progress import CircularProgress, LinearProgress, ProgressBar
 from .radio import Radio
@@ -104,4 +105,6 @@ __all__ = [
     "Icon",
     "Image",
     "Avatar",
+    # Native (Tkinter-only)
+    "NativeWidget",
 ]

@@ -38,7 +38,7 @@ ROBOTO_URLS = {
 
 @dataclass
 class RenderNode:
-    """Node in the render tree with computed layout."""
+    """Node in the render tree with computed layout and caching."""
 
     element: Optional["Element"] = None
     x: int = 0
@@ -49,6 +49,16 @@ class RenderNode:
     focused: bool = False
     hovered: bool = False
     children: List["RenderNode"] = field(default_factory=list)
+
+    # Caching support
+    cached_image: Optional[Image.Image] = None
+    dirty: bool = True
+    is_cacheable: bool = False  # True for rows, columns, cards
+    cache_key: Optional[str] = None  # For cache invalidation
+
+    # Native widget support
+    is_native_hole: bool = False  # True if this is a placeholder for native widget
+    native_widget: Optional[Any] = None  # Reference to actual Tkinter widget
 
 
 @dataclass
@@ -199,6 +209,17 @@ class TkinterAdapter(BaseAdapter):
         # Page rebuild callback (set externally)
         self._rebuild_callback: Optional[Callable[[], Any]] = None
 
+        # Native widget tracking
+        self._native_widgets: Dict[int, tk.Widget] = {}  # element.id -> widget
+        self._native_frames: Dict[int, tk.Frame] = {}  # element.id -> container frame
+
+        # Render cache for incremental updates
+        self._node_cache: Dict[int, RenderNode] = {}  # element.id -> cached node
+        self._cache_enabled: bool = True
+
+        # Background image ID for canvas
+        self._bg_image_id: Optional[int] = None
+
         # Create base layer
         self._create_layer("base", z_index=0)
 
@@ -261,7 +282,7 @@ class TkinterAdapter(BaseAdapter):
         available_height: int,
         clip_rect: Optional[Tuple[int, int, int, int]] = None,
     ) -> RenderNode:
-        """Build render tree with layout calculations."""
+        """Build render tree with layout calculations and caching."""
         node = RenderNode(
             element=element,
             x=x,
@@ -271,10 +292,33 @@ class TkinterAdapter(BaseAdapter):
             hovered=element == self._hovered,
         )
 
+        # Mark cacheable containers (major layout boundaries)
+        if element.tag in ("row", "column", "card"):
+            node.is_cacheable = True
+            node.cache_key = f"{element.id}:{element.tag}"
+
+        # Handle native widget elements
+        if element.tag == "native_widget":
+            node.is_native_hole = True
+            node.dirty = True  # Always re-evaluate native widgets
+
         # Calculate size based on element type
         width, height = self._calculate_size(element, available_width, available_height)
         node.width = width
         node.height = height
+
+        # Check cache for incremental updates
+        if self._cache_enabled and element.id in self._node_cache:
+            cached = self._node_cache[element.id]
+            # Reuse cache if position/size unchanged and not dirty
+            if (cached.x == x and cached.y == y and
+                cached.width == width and cached.height == height and
+                cached.focused == node.focused and
+                cached.hovered == node.hovered and
+                not cached.dirty and cached.cached_image is not None):
+                # Reuse cached node
+                node.cached_image = cached.cached_image
+                node.dirty = False
 
         # Map element to node
         self._element_map[element.id] = node
@@ -387,6 +431,12 @@ class TkinterAdapter(BaseAdapter):
                 return min(max_width + padding * 2, available_width), total_height + padding * 2
             return min(400, available_width), 100
 
+        elif tag == "native_widget":
+            # Native widgets specify their own size
+            width = getattr(element, "width", 200)
+            height = getattr(element, "height", 100)
+            return width, height
+
         return 100, 32
 
     def _index_focusable(self, node: RenderNode) -> None:
@@ -399,16 +449,61 @@ class TkinterAdapter(BaseAdapter):
             self._index_focusable(child)
 
     def _paint_node(self, draw: ImageDraw.Draw, node: RenderNode, image: Image.Image) -> None:
-        """Paint a render node and its children."""
+        """Paint a render node and its children with caching support."""
         if not node.element:
             return
 
         element = node.element
         tag = element.tag
 
-        # Apply clipping if set
-        # (Pillow doesn't have native clipping, so we'd need to use masks for complex cases)
+        # Handle native widget - don't paint, just reserve space
+        if tag == "native_widget":
+            self._paint_native_widget_placeholder(draw, node)
+            self._position_native_widget(node)
+            return
 
+        # Check if we can use cached image for this node
+        if node.is_cacheable and not node.dirty and node.cached_image is not None:
+            # Paste cached image at node position
+            image.paste(node.cached_image, (node.x, node.y), node.cached_image)
+            return
+
+        # For cacheable nodes, render to a separate image
+        if node.is_cacheable:
+            # Create a new image for this node's content
+            node_image = Image.new("RGBA", (node.width, node.height), (0, 0, 0, 0))
+            node_draw = ImageDraw.Draw(node_image)
+
+            # Paint this node's background to node_image (offset to 0,0)
+            temp_x, temp_y = node.x, node.y
+            node.x, node.y = 0, 0
+
+            if tag == "card":
+                self._paint_card(node_draw, node, node_image)
+            elif tag in ("row", "column"):
+                pass  # Containers have no background
+
+            # Paint children (recursively, they'll be at relative positions)
+            for child in node.children:
+                # Adjust child positions relative to this node
+                child.x -= temp_x
+                child.y -= temp_y
+                self._paint_node(node_draw, child, node_image)
+                child.x += temp_x
+                child.y += temp_y
+
+            node.x, node.y = temp_x, temp_y
+
+            # Cache and paste
+            node.cached_image = node_image
+            node.dirty = False
+            image.paste(node_image, (node.x, node.y), node_image)
+
+            # Update cache
+            self._node_cache[element.id] = node
+            return
+
+        # Standard painting for non-cacheable nodes
         if tag == "label":
             self._paint_label(draw, node)
         elif tag == "button":
@@ -597,6 +692,106 @@ class TkinterAdapter(BaseAdapter):
             outline=self.COLORS["border"],
         )
 
+    def _paint_native_widget_placeholder(self, draw: ImageDraw.Draw, node: RenderNode) -> None:
+        """Paint a placeholder rectangle for native widget area."""
+        # Draw a subtle border to show where the native widget will be
+        draw.rectangle(
+            [node.x, node.y, node.x + node.width, node.y + node.height],
+            fill=self.COLORS["surface"],
+            outline=self.COLORS["border"],
+        )
+
+        # If no native widget is attached yet, show a label
+        if node.element and node.element.id not in self._native_widgets:
+            font = self._font_manager.get_font(size=12)
+            text = "Native Widget"
+            draw.text(
+                (node.x + 8, node.y + 8),
+                text,
+                fill=self.COLORS["text_secondary"],
+                font=font,
+            )
+
+    def _position_native_widget(self, node: RenderNode) -> None:
+        """Position the native Tkinter widget at the correct location."""
+        if not node.element or not self._canvas or not self._root:
+            return
+
+        element = node.element
+        widget_id = element.id
+
+        # Get or create the native widget
+        if widget_id not in self._native_widgets:
+            # Get the widget factory from the element
+            factory = getattr(element, "widget_factory", None)
+            if factory and callable(factory):
+                # Create container frame as child of root window (not canvas)
+                # This ensures proper rendering and event handling
+                frame = tk.Frame(
+                    self._root,
+                    bg=self.COLORS["surface"],
+                    highlightthickness=0,
+                    width=node.width,
+                    height=node.height,
+                )
+                # Prevent frame from shrinking to fit children
+                frame.pack_propagate(False)
+                self._native_frames[widget_id] = frame
+
+                # Create the actual widget inside the frame
+                widget = factory(frame)
+                if widget:
+                    widget.pack(fill=tk.BOTH, expand=True)
+                    self._native_widgets[widget_id] = widget
+
+                # Force frame to update so its geometry is calculated
+                frame.update_idletasks()
+
+                # Place on canvas using create_window (ensures it's on top)
+                window_id = self._canvas.create_window(
+                    node.x,
+                    node.y,
+                    window=frame,
+                    anchor=tk.NW,
+                    width=node.width,
+                    height=node.height,
+                )
+                # Store window ID for later updates
+                frame._canvas_window_id = window_id
+        else:
+            # Update existing widget position
+            if widget_id in self._native_frames:
+                frame = self._native_frames[widget_id]
+                if hasattr(frame, "_canvas_window_id"):
+                    self._canvas.coords(frame._canvas_window_id, node.x, node.y)
+                    self._canvas.itemconfig(
+                        frame._canvas_window_id,
+                        width=node.width,
+                        height=node.height,
+                    )
+
+    def remove_native_widget(self, element_id: int) -> None:
+        """Remove a native widget by element ID."""
+        if element_id in self._native_frames:
+            frame = self._native_frames[element_id]
+            # Delete canvas window item first
+            if hasattr(frame, "_canvas_window_id") and self._canvas:
+                self._canvas.delete(frame._canvas_window_id)
+            frame.destroy()
+            del self._native_frames[element_id]
+        if element_id in self._native_widgets:
+            del self._native_widgets[element_id]
+
+    def clear_native_widgets(self) -> None:
+        """Remove all native widgets."""
+        for frame in self._native_frames.values():
+            # Delete canvas window item first
+            if hasattr(frame, "_canvas_window_id") and self._canvas:
+                self._canvas.delete(frame._canvas_window_id)
+            frame.destroy()
+        self._native_widgets.clear()
+        self._native_frames.clear()
+
     def _composite_and_display(self) -> None:
         """Composite all layers and update the Tkinter canvas."""
         if not self._canvas:
@@ -614,9 +809,16 @@ class TkinterAdapter(BaseAdapter):
         # Convert to PhotoImage
         self._photo_image = ImageTk.PhotoImage(result)
 
-        # Update canvas
-        self._canvas.delete("all")
-        self._canvas.create_image(0, 0, anchor=tk.NW, image=self._photo_image)
+        # Update canvas - delete only the background image, keep native widget windows
+        # Find and delete the existing background image
+        if hasattr(self, "_bg_image_id") and self._bg_image_id:
+            self._canvas.delete(self._bg_image_id)
+
+        # Create new background image (behind native widgets)
+        self._bg_image_id = self._canvas.create_image(0, 0, anchor=tk.NW, image=self._photo_image)
+
+        # Lower the background image below all windows
+        self._canvas.tag_lower(self._bg_image_id)
 
     def run(self, on_close: Optional[Callable] = None) -> None:
         """Run the Tkinter main loop."""

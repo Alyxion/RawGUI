@@ -219,6 +219,77 @@ The Tkinter adapter is designed for future multi-layer support:
 - Overlay layers: Native Tkinter widgets can be composited on top
 - This enables gradual migration or hybrid UIs
 
+### Intelligent Rendering Graph (Future Optimization)
+
+Full re-rendering of the entire image on every update is expensive, especially with many text areas. The Tkinter adapter should implement an intelligent caching and rendering system.
+
+**Region-Based Caching:**
+- Cache rendered output at major container boundaries (rows, columns, cards)
+- Each cacheable region stores its rendered PIL Image
+- On state change, only invalidate and re-render affected regions
+- Propagate invalidation up the tree (child change invalidates parent)
+
+**Alpha Blending Considerations:**
+- Many elements have rounded corners with alpha-blended edges
+- Elements may have semi-transparent backgrounds
+- Cache regions must account for alpha compositing order
+- When a region is invalidated, all overlapping regions above it must also re-render
+
+**Clipped Drawing:**
+- Support clipped rendering within container bounds
+- Scrollable areas only render visible content
+- Use clip rectangles to avoid drawing outside bounds
+- Cache visible portions separately from full content
+
+**Dirty Rectangle Tracking:**
+```
+RenderNode:
+  - cached_image: Optional[PIL.Image]
+  - dirty: bool
+  - dirty_rect: Optional[Rect]  # None = full redraw needed
+  - children_dirty: bool
+
+On update:
+  1. Mark changed element as dirty
+  2. Propagate dirty_rect up to nearest cacheable ancestor
+  3. On render, only redraw dirty regions
+  4. Composite cached + freshly rendered regions
+```
+
+**Native Component Integration (Implemented):**
+- **Native widgets are the exception, not the norm** - 99% of UI should be RawGUI elements
+- However, it is technically possible to mix native Tkinter widgets when needed
+- Use cases: embedding a browser, complex canvas, video player, or other widgets with no RawGUI equivalent
+- Example: A RawGUI app with 3 cards, one containing a native Tkinter browser widget
+- Architecture:
+  - RawGUI renders to canvas as usual
+  - Native widgets are placed as Tkinter children at calculated coordinates
+  - Render graph tracks "holes" where native widgets live
+  - Native widgets handle their own rendering/events
+  - On layout change, reposition native widgets to match RawGUI layout
+
+```python
+# Native widget API - use sparingly, only when necessary
+def create_my_widget(parent):
+    """Factory function receives a parent Frame, returns a Tkinter widget."""
+    import tkinter as tk
+    widget = tk.Text(parent, height=10, width=40)
+    widget.insert('1.0', 'Hello from native Tkinter!')
+    return widget
+
+with ui.card():
+    ui.label("Text Editor")
+    ui.native_widget(create_my_widget, width=400, height=200)
+```
+
+See `examples/native_widget_demo.py` for a complete example with Scale, Text, Listbox, and Canvas widgets.
+
+**Performance Targets:**
+- Static UI: render once, cache everything
+- Single element change: only re-render that element + ancestors
+- Scroll: only render newly visible content
+- Native widgets: zero Pillow rendering overhead for native areas
+
 ### Selecting the Renderer
 
 **Option 1: Environment Variable (Recommended)**
@@ -332,6 +403,63 @@ Screenshots should always be available for development and testing. The PIL/Tkin
 - Automated visual testing
 - Documentation generation
 - Comparing TUI/GUI/Web rendering
+
+### 4. **Tkinter with Xvfb Screenshots** (`capture_tkinter_xvfb`)
+   - Captures actual Tkinter window rendering using virtual X display (Xvfb)
+   - **Shows native Tkinter widgets** (Scale, Text, Listbox, Canvas, etc.)
+   - Requires Xvfb installed (`apt-get install xvfb`)
+   - Best for visual verification and demos with native widgets
+   - Ideal for CI/CD on headless systems with X11 support
+
+### Xvfb Screenshot Usage
+
+```python
+from rawgui.testing import capture_tkinter_xvfb
+
+# Capture native widget demo with actual Tkinter rendering
+capture_tkinter_xvfb(
+    "examples/native_widget_demo.py",
+    "screenshots/demo_native_tkinter.png",
+    width=1024,
+    height=768,
+    wait_seconds=2
+)
+
+# Capture with custom parameters
+capture_tkinter_xvfb(
+    "examples/counter.py",
+    "screenshots/counter_tkinter.png",
+    width=800,
+    height=600,
+    wait_seconds=1.5,
+    display=":99"
+)
+```
+
+### Xvfb CLI Usage
+
+```bash
+# Basic capture (800x600, 2 second wait)
+poetry run python -m rawgui.testing.screenshot_xvfb examples/native_widget_demo.py -o screenshots/
+
+# Custom dimensions and wait time
+poetry run python -m rawgui.testing.screenshot_xvfb examples/counter.py \
+  -w 1024 -H 768 -t 3 -o screenshots/counter_tkinter.png
+
+# Use different X display
+poetry run python -m rawgui.testing.screenshot_xvfb examples/form.py \
+  -d ":100" -o screenshots/form_tkinter.png
+```
+
+### Comparison: All Screenshot Methods
+
+| Feature | TUI | PIL | NiceGUI | Xvfb Tkinter |
+|---------|-----|-----|---------|--------------|
+| **Needs Display** | No (PTY) | No | Yes (Chrome) | Yes (Xvfb) |
+| **Speed** | Slower | Very Fast | Slower | Fast |
+| **Native Widgets** | N/A | Shows placeholders | Browser controls | ✅ Fully rendered |
+| **Installation** | Standard | Standard | Chrome required | xvfb required |
+| **Best For** | Terminal testing | CI/CD | Browser reference | Native widget demos |
 
 ## User Interaction Testing (Selenium-like API)
 

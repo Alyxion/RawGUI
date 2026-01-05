@@ -627,8 +627,8 @@ def _run_tkinter(
     # Set rebuild callback
     adapter._rebuild_callback = rebuild_page
 
-    async def build_and_render():
-        """Build the page and render it."""
+    async def build_page():
+        """Build the page without rendering (rendering happens after window is created)."""
         # Run startup handlers
         await app._run_startup()
         app._run_connect(client)
@@ -645,10 +645,7 @@ def _run_tkinter(
                     el.client = client
                     client.register_element(el)
                 auto_client.elements.clear()
-
-                root = roots[0] if len(roots) == 1 else roots[0]
-                adapter.render(root)
-                return
+                return roots[0] if len(roots) == 1 else roots[0]
 
         if match:
             route, params = match
@@ -658,11 +655,15 @@ def _run_tkinter(
             # Get root elements
             roots = [el for el in client.elements.values() if el.parent_slot is None]
             if roots:
-                root = roots[0] if len(roots) == 1 else roots[0]
-                adapter.render(root)
+                return roots[0] if len(roots) == 1 else roots[0]
+
+        return None
 
     import asyncio
-    asyncio.run(build_and_render())
+    root_element = asyncio.run(build_page())
 
-    # Run the adapter main loop
+    # Set root element for rendering after window is created
+    adapter._root_element = root_element
+
+    # Run the adapter main loop (creates window and renders)
     adapter.run()
