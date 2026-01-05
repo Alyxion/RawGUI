@@ -501,26 +501,168 @@ _app: Optional[RawGUIApp] = None
 
 def run(
     *,
-    host: str = "0.0.0.0",  # Ignored
-    port: int = 8080,  # Ignored
+    host: str = "0.0.0.0",  # Ignored for TUI
+    port: int = 8080,  # Ignored for TUI
     title: str = "RawGUI",
     reload: bool = True,
-    show: bool = True,  # Ignored
+    show: bool = True,  # Ignored for TUI
     dark: Optional[bool] = None,
     storage_secret: Optional[str] = None,
-    native: bool = False,  # Ignored
+    native: bool = False,  # Ignored for TUI
+    renderer: Optional[str] = None,  # "tui", "tkinter", "nicegui"
     **kwargs,
 ) -> None:
     """Run the RawGUI application.
 
-    NiceGUI-compatible signature.
+    NiceGUI-compatible signature. The renderer can be selected via:
+    1. Environment variable RAWGUI_RENDERER (recommended)
+    2. The 'renderer' parameter (for testing)
 
     Args:
         title: Application title
         reload: Enable auto-reload on file changes
         dark: Dark mode (None = auto)
-        Other args are for NiceGUI compatibility and ignored
+        renderer: Renderer backend ("tui", "tkinter", "nicegui")
+        Other args are for NiceGUI compatibility and may be ignored
     """
     global _app
-    _app = RawGUIApp(title=title, reload=reload, dark=dark)
-    _app.run()
+
+    # Determine renderer: env var takes precedence, then parameter, then default
+    selected_renderer = os.environ.get("RAWGUI_RENDERER", renderer or "tui").lower()
+
+    if selected_renderer == "nicegui":
+        # Use actual NiceGUI
+        try:
+            from nicegui import ui as nicegui_ui
+            nicegui_ui.run(
+                host=host,
+                port=port,
+                title=title,
+                reload=reload,
+                show=show,
+                dark=dark,
+                storage_secret=storage_secret,
+                native=native,
+                **kwargs,
+            )
+        except ImportError:
+            print("Error: nicegui not installed. Install with: pip install nicegui")
+            sys.exit(1)
+
+    elif selected_renderer == "tkinter":
+        # Use Tkinter adapter with Pillow rendering
+        _run_tkinter(title=title, dark=dark, reload=reload)
+
+    else:
+        # Default: TUI mode
+        _app = RawGUIApp(title=title, reload=reload, dark=dark)
+        _app.run()
+
+
+def _run_tkinter(
+    title: str = "RawGUI",
+    dark: bool = True,
+    reload: bool = False,
+    width: int = 800,
+    height: int = 600,
+) -> None:
+    """Run with Tkinter adapter."""
+    from .adapters import TkinterAdapter
+    from .client import Client
+
+    # Configure app
+    app.config.title = title
+    app._running = True
+
+    # Create client
+    client = Client()
+
+    # Create adapter
+    adapter = TkinterAdapter(
+        width=width,
+        height=height,
+        title=title,
+        dark=dark if dark is not None else True,
+    )
+
+    # Store client reference for rebuilding
+    adapter._client = client
+
+    def rebuild_page():
+        """Rebuild the current page (called after navigation)."""
+        import asyncio
+
+        async def _rebuild():
+            # Clear client elements
+            client.clear()
+
+            # Find matching route
+            match = router.match("/")
+            if match:
+                route, params = match
+                await route.build(client, params)
+
+                # Get root elements
+                roots = [el for el in client.elements.values() if el.parent_slot is None]
+                if roots:
+                    return roots[0] if len(roots) == 1 else roots[0]
+            return None
+
+        # Run async rebuild in a new event loop
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            # We're inside an existing loop - use nest_asyncio or run in thread
+            # For simplicity, create a new loop in a thread-safe way
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, _rebuild())
+                return future.result()
+        else:
+            return asyncio.run(_rebuild())
+
+    # Set rebuild callback
+    adapter._rebuild_callback = rebuild_page
+
+    async def build_and_render():
+        """Build the page and render it."""
+        # Run startup handlers
+        await app._run_startup()
+        app._run_connect(client)
+
+        # Find matching route for root
+        match = router.match("/")
+
+        # Check for implicit root page
+        if not match and app._auto_index_client:
+            auto_client = app._auto_index_client
+            roots = [el for el in auto_client.elements.values() if el.parent_slot is None]
+            if roots:
+                for el in list(auto_client.elements.values()):
+                    el.client = client
+                    client.register_element(el)
+                auto_client.elements.clear()
+
+                root = roots[0] if len(roots) == 1 else roots[0]
+                adapter.render(root)
+                return
+
+        if match:
+            route, params = match
+            client.navigate_to("/")
+            await route.build(client, params)
+
+            # Get root elements
+            roots = [el for el in client.elements.values() if el.parent_slot is None]
+            if roots:
+                root = roots[0] if len(roots) == 1 else roots[0]
+                adapter.render(root)
+
+    import asyncio
+    asyncio.run(build_and_render())
+
+    # Run the adapter main loop
+    adapter.run()

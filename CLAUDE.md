@@ -169,6 +169,88 @@ Elements have two distinct visual states:
 
 Elements should only capture keys they actually use. If an element doesn't need Up/Down (like a text input), those keys should navigate to other components. Escape always exits any focus/edit mode.
 
+## Multi-Adapter Rendering Architecture
+
+RawGUI supports multiple rendering backends (adapters). **The source code is 100% identical across all backends.**
+
+### Core Principle: Unified Source Code
+
+**CRITICAL: Application source code must remain 100% identical regardless of rendering backend.**
+
+- Same source runs on TUI, Tkinter, and NiceGUI
+- No conditional imports or adapter-specific code in apps
+- Renderer selection happens EXTERNALLY via:
+  1. Environment variable `RAWGUI_RENDERER`
+  2. The `rawgui` runner tool
+  3. Parameter to `ui.run()`
+
+This means:
+- **NO separate samples** for different adapters
+- NiceGUI samples should run unmodified with RawGUI
+- RawGUI samples should run unmodified with NiceGUI
+
+### Available Adapters
+
+1. **TUI (Terminal)** - Primary focus, default
+   - Uses `blessed` library
+   - ASCII/Unicode rendering
+   - Full keyboard and mouse support
+
+2. **Tkinter** - GUI fallback
+   - Single canvas rendering
+   - 100% Pillow-based painting
+   - Uses Roboto fonts (downloaded automatically)
+   - Intelligent clipping for nested elements
+   - Full mouse and keyboard handling
+   - Prepared for multi-layer rendering (mixing NiceGUI with native Tkinter components)
+
+### Adapter Interface
+
+All adapters implement a common interface:
+- `render(root_element)` - Render element tree
+- `invalidate()` - Mark for re-render
+- `get_element_at(x, y)` - Hit testing for mouse
+- `focus_next()` / `focus_prev()` - Focus navigation
+
+### Multi-Layer Architecture
+
+The Tkinter adapter is designed for future multi-layer support:
+- Base layer: RawGUI elements rendered via Pillow
+- Overlay layers: Native Tkinter widgets can be composited on top
+- This enables gradual migration or hybrid UIs
+
+### Selecting the Renderer
+
+**Option 1: Environment Variable (Recommended)**
+```bash
+# TUI mode (default)
+poetry run python my_app.py
+
+# Tkinter mode
+RAWGUI_RENDERER=tkinter poetry run python my_app.py
+
+# NiceGUI mode (uses actual NiceGUI)
+RAWGUI_RENDERER=nicegui poetry run python my_app.py
+```
+
+**Option 2: Runner Tool**
+```bash
+# TUI mode (default)
+poetry run rawgui my_app.py
+
+# Tkinter mode
+poetry run rawgui --renderer=tkinter my_app.py
+
+# NiceGUI mode
+poetry run rawgui --renderer=nicegui my_app.py
+```
+
+**Option 3: Code Parameter (least preferred)**
+```python
+# Only use this for development/testing
+ui.run(renderer="tkinter")
+```
+
 ## Style System
 
 - `.classes()` maps Tailwind-like classes to terminal attributes
@@ -187,6 +269,181 @@ Elements should only capture keys they actually use. If an element doesn't need 
 - Capture screenshots of NiceGUI samples via Selenium
 - Compare TUI output to web rendering
 - Goal: Make TUI samples as close as possible to NiceGUI
+
+## Screenshot Capture
+
+RawGUI provides unified screenshot capture for all three renderers. This enables visual testing and comparison across rendering backends.
+
+### Available Methods
+
+1. **TUI Screenshots** (`capture_tui`)
+   - Runs script in PTY subprocess with pyte terminal emulator
+   - Renders to PNG with terminal colors and fonts
+   - Best for testing actual terminal behavior
+
+2. **PIL/Tkinter Screenshots** (`capture_pil`)
+   - Renders headlessly using Pillow (no window needed)
+   - Uses Roboto fonts (auto-downloaded)
+   - Fast, deterministic, ideal for CI/CD
+
+3. **NiceGUI Screenshots** (`capture_nicegui`)
+   - Uses Selenium to capture browser rendering
+   - Requires Chrome/Chromium and chromedriver
+   - Reference for visual parity comparison
+
+### Usage
+
+```python
+from rawgui.testing import capture_tui, capture_pil, capture_nicegui
+
+# TUI screenshot (runs in PTY)
+capture_tui("examples/counter.py", "screenshots/counter_tui.png")
+
+# PIL screenshot (headless, fast)
+capture_pil("examples/counter.py", "screenshots/counter_pil.png")
+
+# NiceGUI screenshot (browser-based)
+capture_nicegui("examples/counter.py", "screenshots/counter_nicegui.png")
+
+# Capture all renderers at once
+from rawgui.testing import capture_all_renderers
+capture_all_renderers("examples/counter.py", "screenshots/")
+```
+
+### CLI Usage
+
+```bash
+# Capture with PIL (default)
+poetry run python -m rawgui.testing.screenshots examples/counter.py -o screenshots/
+
+# Capture with specific renderer
+poetry run python -m rawgui.testing.screenshots examples/counter.py -r tui
+poetry run python -m rawgui.testing.screenshots examples/counter.py -r pil
+poetry run python -m rawgui.testing.screenshots examples/counter.py -r nicegui
+
+# Capture all renderers
+poetry run python -m rawgui.testing.screenshots examples/counter.py -r all
+```
+
+### Design Principle
+
+Screenshots should always be available for development and testing. The PIL/Tkinter renderer can generate screenshots without any display server, making it ideal for:
+- CI/CD pipelines
+- Automated visual testing
+- Documentation generation
+- Comparing TUI/GUI/Web rendering
+
+## User Interaction Testing (Selenium-like API)
+
+RawGUI provides a unified `User` class for simulating user interactions across both TUI and Tkinter renderers. This is similar to Selenium's WebDriver API.
+
+### Basic Usage
+
+```python
+from rawgui.testing import User
+
+# Test with Tkinter renderer (headless, fast)
+with User("examples/counter.py", renderer="tkinter") as user:
+    # Verify initial state
+    assert user.contains("Count: 0")
+
+    # Find and click a button
+    btn = user.find_by_text("+ Increment")
+    user.click_element(btn)
+
+    # Verify result
+    assert user.contains("Count: 1")
+
+    # Take screenshot
+    user.screenshot("result.png")
+
+# Test with TUI renderer (runs in PTY subprocess)
+with User("examples/counter.py", renderer="tui") as user:
+    user.wait_for_text("Counter Demo")
+    user.press_key("tab")
+    user.press_key("space")
+    assert user.contains("Count: 1")
+```
+
+### User API
+
+**Element Finding:**
+- `user.find_by_text(text)` - Find element containing text
+- `user.find_by_tag(tag)` - Find elements by tag (button, input, label, etc.)
+- `user.find_focused()` - Get currently focused element
+- `user.get_elements()` - Get all rendered elements with coordinates
+
+**Interactions:**
+- `user.click(x, y)` - Click at screen coordinates
+- `user.click_element(el)` - Click on element (uses center)
+- `user.click_text(text)` - Click element containing text
+- `user.press_key(key)` - Press key (enter, space, tab, escape, up, down, left, right)
+- `user.type_text(text)` - Type text into focused input
+
+**Assertions:**
+- `user.contains(text)` - Check if text is visible
+- `user.should_contain(text)` - Assert text is visible (raises if not)
+- `user.should_not_contain(text)` - Assert text is not visible
+- `user.get_text()` - Get all visible text
+
+**Screenshots:**
+- `user.screenshot(path)` - Save screenshot to file
+- `user.get_image()` - Get PIL Image (Tkinter only)
+
+**Element Info:**
+```python
+el = user.find_by_text("Submit")
+print(el.x, el.y)        # Position
+print(el.width, el.height)  # Size
+print(el.center)         # (x, y) tuple
+print(el.tag)            # "button", "input", etc.
+print(el.text)           # Text content
+print(el.focused)        # Is focused?
+```
+
+### Image Comparison
+
+```python
+from rawgui.testing import compare_images
+
+# Compare two screenshots
+are_equal, diff_ratio = compare_images("before.png", "after.png", threshold=0.01)
+# diff_ratio: 0.0 = identical, 1.0 = completely different
+```
+
+### Cross-Renderer Testing
+
+The same tests can run on both renderers:
+
+```python
+import pytest
+from rawgui.testing import User
+
+@pytest.mark.parametrize("renderer", ["tkinter", "tui"])
+def test_increment(renderer):
+    with User("examples/counter.py", renderer=renderer) as user:
+        if renderer == "tui":
+            user.wait_for_text("Counter Demo")
+            user.press_key("tab")
+            user.press_key("tab")
+            user.press_key("space")
+        else:
+            btn = user.find_by_text("+ Increment")
+            user.click_element(btn)
+
+        assert user.contains("Count: 1")
+```
+
+### Key Differences Between Renderers
+
+| Feature | TUI User | Tkinter User |
+|---------|----------|--------------|
+| `get_elements()` | Limited (text-based) | Full element info |
+| `click(x, y)` | Not supported | Supported |
+| `find_focused()` | Not supported | Supported |
+| `wait_for_text()` | Yes (async) | Yes (immediate) |
+| Screenshot | PTY capture | PIL render |
+| Speed | Slower (subprocess) | Fast (headless) |
 
 ## Commands
 

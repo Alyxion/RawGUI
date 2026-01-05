@@ -14,12 +14,12 @@ watchfiles = "^0.21.0"
 pexpect = "^4.9.0"
 pyte = "^0.8.2"
 Pillow = "^10.0.0"
+nicegui = "^3.4.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
 pytest-asyncio = "^0.23.0"
 selenium = "^4.0.0"
-nicegui = "^2.0.0"
 ruff = "^0.4.0"
 
 [tool.poetry.scripts]
