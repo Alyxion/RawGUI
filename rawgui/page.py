@@ -223,12 +223,10 @@ class Navigate:
         Args:
             path: The path to navigate to
         """
-        from .context import context
+        from .app import app
 
-        client = context.client
-        if client:
-            client.navigate_to(path)
-            # Trigger re-render (will be implemented by renderer)
+        # Set pending navigation - the run loop will pick this up
+        app._pending_navigation = path
 
     def back(self) -> None:
         """Navigate back in history."""

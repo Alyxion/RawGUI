@@ -2,6 +2,8 @@
 
 Each terminal session has a Client that manages the element tree,
 navigation state, and event handling.
+
+Each client has its own SessionConfig for multi-session support.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ import uuid
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional
 
 from .context import context
+from .config import SessionConfig
 
 if TYPE_CHECKING:
     from .element import Element
@@ -24,6 +27,7 @@ class Client:
     - Navigation history
     - Element registry for quick lookup
     - Storage (session-based)
+    - Session-specific configuration (scaling, colors, etc.)
     """
 
     # Class-level registry of all clients
@@ -33,13 +37,21 @@ class Client:
     page_routes: Dict[Callable, str] = {}
     page_configs: Dict[Callable, "PageConfig"] = {}
 
-    def __init__(self, client_id: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        client_id: Optional[str] = None,
+        config: Optional[SessionConfig] = None,
+    ) -> None:
         """Initialize a new client.
 
         Args:
             client_id: Optional explicit client ID
+            config: Optional session configuration (uses defaults if None)
         """
         self.id = client_id or str(uuid.uuid4())
+
+        # Session-specific configuration
+        self.config = config or SessionConfig()
 
         # Element registry
         self._elements: Dict[int, "Element"] = {}

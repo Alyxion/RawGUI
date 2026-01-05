@@ -43,6 +43,7 @@ class App:
     - Configuration
     - Storage (client, user, general, browser scopes)
     - Lifecycle hooks (startup, shutdown, connect, disconnect)
+    - Auto-index client for implicit root page
     """
 
     _instance: Optional["App"] = None
@@ -61,6 +62,13 @@ class App:
 
         # Running state
         self._running = False
+
+        # Auto-index client for elements created at module scope
+        # (NiceGUI's implicit root page behavior)
+        self._auto_index_client: Optional[Any] = None
+
+        # Pending navigation path (set by ui.navigate.to, consumed by run loop)
+        self._pending_navigation: Optional[str] = None
 
     @classmethod
     def instance(cls) -> "App":

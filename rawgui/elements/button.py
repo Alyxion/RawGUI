@@ -25,6 +25,7 @@ class Button(DisableableElement, TextElement, Element):
         on_click: Optional[Callable] = None,
         icon: Optional[str] = None,
         color: Optional[str] = None,
+        disabled: bool = False,
     ) -> None:
         """Initialize the button.
 
@@ -33,11 +34,15 @@ class Button(DisableableElement, TextElement, Element):
             on_click: Click handler callback
             icon: Optional icon name
             color: Optional color
+            disabled: Whether button is disabled
         """
         super().__init__(text=text, tag="button")
 
         self.icon = icon
         self.color = color
+
+        if disabled:
+            self.disable()
 
         if on_click:
             self.on_click(on_click)

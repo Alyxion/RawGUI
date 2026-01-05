@@ -111,6 +111,12 @@ class RawGUIApp:
                     if key:
                         await self._handle_input(key)
 
+                    # Check for pending navigation (from ui.navigate.to)
+                    if app._pending_navigation is not None:
+                        path = app._pending_navigation
+                        app._pending_navigation = None
+                        await self._navigate(path)
+
                 if reload_task:
                     reload_task.cancel()
                     try:
@@ -129,52 +135,111 @@ class RawGUIApp:
             self.client.close()
 
     async def _read_key(self, timeout: float = 0.1):
-        """Read a key with timeout (non-blocking)."""
-        loop = asyncio.get_event_loop()
-        try:
-            return await asyncio.wait_for(
-                loop.run_in_executor(None, lambda: self.term.inkey(timeout=timeout)),
-                timeout=timeout + 0.1
-            )
-        except asyncio.TimeoutError:
-            return None
+        """Read a key with timeout (non-blocking).
+
+        Uses a short timeout with inkey() which is designed to be non-blocking.
+        The blessed inkey() with timeout uses select/poll internally.
+        """
+        # Use very short timeout to stay responsive
+        key = self.term.inkey(timeout=timeout)
+
+        # Yield to event loop to keep things responsive
+        await asyncio.sleep(0)
+
+        if key:
+            return key
+        return None
 
     async def _handle_input(self, key) -> None:
         """Handle keyboard and mouse input."""
-        # Check for quit
-        if key == chr(3) or key == chr(17):  # Ctrl+C or Ctrl+Q
+        key_str = str(key)
+        focused = self.renderer.focused
+        in_edit_mode = self.renderer.edit_mode
+
+        # Check for quit - Ctrl+C (chr(3)), Ctrl+Q (chr(17))
+        if key_str == '\x03' or key_str == '\x11':  # Ctrl+C or Ctrl+Q
             self._running = False
             return
 
-        if key == chr(27):  # Escape
+        # Escape - exit edit mode first, or quit if not in edit mode
+        if key_str == '\x1b' or key.name == "KEY_ESCAPE":
+            if in_edit_mode:
+                self.renderer.exit_edit_mode()
+                return
             self._running = False
             return
 
-        # Mouse events
-        if hasattr(key, 'is_mouse') or (hasattr(key, 'code') and key.code and 'mouse' in str(key.code).lower()):
+        # 'q' to quit (only if not focused on an input/textarea)
+        if key_str == 'q' and (not focused or focused.tag not in ("input", "textarea")):
+            self._running = False
+            return
+
+        # Mouse events - blessed uses names like KEY_MOUSE, MOUSE_RELEASE, etc.
+        if key.name and "MOUSE" in str(key.name).upper():
             await self._handle_mouse(key)
             return
 
-        # Tab navigation
+        # Tab navigation - always works
         if key.name == "KEY_TAB":
+            self.renderer.exit_edit_mode()
             self.renderer.focus_next()
+            self.renderer.invalidate()
             return
 
         if key.name == "KEY_BTAB":  # Shift+Tab
+            self.renderer.exit_edit_mode()
             self.renderer.focus_prev()
+            self.renderer.invalidate()
             return
 
-        # Arrow keys for scrolling
+        # Arrow key navigation
         if key.name == "KEY_UP":
-            focused = self.renderer.focused
-            if not focused or focused.tag != "input":
-                self.renderer.scroll(dy=-1)
+            # Inputs don't capture Up/Down, so navigate to prev element
+            if not focused or focused.tag in ("input", "button", "checkbox"):
+                self.renderer.exit_edit_mode()
+                self.renderer.focus_prev()
+                self.renderer.invalidate()
+            elif focused.tag in ("select", "textarea"):
+                # These capture Up/Down for internal navigation
+                pass  # TODO: handle select/textarea navigation
             return
 
         if key.name == "KEY_DOWN":
-            focused = self.renderer.focused
-            if not focused or focused.tag != "input":
-                self.renderer.scroll(dy=1)
+            # Inputs don't capture Up/Down, so navigate to next element
+            if not focused or focused.tag in ("input", "button", "checkbox"):
+                self.renderer.exit_edit_mode()
+                self.renderer.focus_next()
+                self.renderer.invalidate()
+            elif focused.tag in ("select", "textarea"):
+                # These capture Up/Down for internal navigation
+                pass  # TODO: handle select/textarea navigation
+            return
+
+        if key.name == "KEY_LEFT":
+            if in_edit_mode and focused and focused.tag == "input":
+                # Move cursor left within input
+                cursor_pos = getattr(focused, "_cursor_pos", 0)
+                if cursor_pos > 0:
+                    focused._cursor_pos = cursor_pos - 1
+                    self.renderer.invalidate()
+            else:
+                # Navigate to previous element
+                self.renderer.focus_prev()
+                self.renderer.invalidate()
+            return
+
+        if key.name == "KEY_RIGHT":
+            if in_edit_mode and focused and focused.tag == "input":
+                # Move cursor right within input
+                value = getattr(focused, "value", "") or ""
+                cursor_pos = getattr(focused, "_cursor_pos", len(value))
+                if cursor_pos < len(value):
+                    focused._cursor_pos = cursor_pos + 1
+                    self.renderer.invalidate()
+            else:
+                # Navigate to next element
+                self.renderer.focus_next()
+                self.renderer.invalidate()
             return
 
         if key.name == "KEY_PGUP":
@@ -185,40 +250,100 @@ class RawGUIApp:
             self.renderer.scroll(dy=self.term.height // 2)
             return
 
-        # Enter key - activate focused element
-        if key.name == "KEY_ENTER" or key == "\n" or key == "\r":
-            focused = self.renderer.focused
+        # Browser-like navigation hotkeys
+        # Alt+Left = Back, Alt+Right = Forward
+        if key.name == "kLFT5" or (hasattr(key, 'code') and key.code == 554):  # Alt+Left
+            await self._navigate_back()
+            return
+
+        if key.name == "kRIT5" or (hasattr(key, 'code') and key.code == 569):  # Alt+Right
+            await self._navigate_forward()
+            return
+
+        # Backspace at top level navigates back (like browser)
+        if key.name == "KEY_BACKSPACE" and not focused:
+            await self._navigate_back()
+            return
+
+        # Enter key - activate focused element or enter edit mode
+        if key.name == "KEY_ENTER" or key_str == "\n" or key_str == "\r":
             if focused:
                 if focused.tag == "button":
                     focused._fire_event("click")
                     self.renderer.invalidate()
+                elif focused.tag == "checkbox":
+                    focused.toggle()
+                    self.renderer.invalidate()
+                elif focused.tag == "input":
+                    # Enter toggles edit mode for inputs
+                    if in_edit_mode:
+                        self.renderer.exit_edit_mode()
+                    else:
+                        self.renderer.enter_edit_mode()
+                    self.renderer.invalidate()
+            return
+
+        # Space key - activate buttons and toggle checkboxes
+        if key_str == " ":
+            if focused:
+                if focused.tag == "button":
+                    focused._fire_event("click")
+                    self.renderer.invalidate()
+                elif focused.tag == "checkbox":
+                    focused.toggle()
+                    self.renderer.invalidate()
+                elif focused.tag == "input":
+                    # Space in input enters text
+                    self.renderer.enter_edit_mode()
+                    value = getattr(focused, "value", "") or ""
+                    focused.value = value + " "
+                    focused._fire_event("change", focused.value)
+                    self.renderer.invalidate()
             return
 
         # Handle text input for focused input elements
-        focused = self.renderer.focused
         if focused and focused.tag == "input":
             enabled = getattr(focused, "enabled", True)
             if not enabled:
                 return
 
+            value = getattr(focused, "value", "") or ""
+            cursor_pos = getattr(focused, "_cursor_pos", len(value))
+
             if key.name == "KEY_BACKSPACE" or key.code == 127:
-                value = getattr(focused, "value", "") or ""
-                if value:
-                    focused.value = value[:-1]
+                # Delete character before cursor
+                if cursor_pos > 0:
+                    focused.value = value[:cursor_pos - 1] + value[cursor_pos:]
+                    focused._cursor_pos = cursor_pos - 1
                     focused._fire_event("change", focused.value)
                     self.renderer.invalidate()
                 return
 
             if key.name == "KEY_DELETE":
-                focused.value = ""
-                focused._fire_event("change", "")
+                # Delete character after cursor
+                if cursor_pos < len(value):
+                    focused.value = value[:cursor_pos] + value[cursor_pos + 1:]
+                    focused._fire_event("change", focused.value)
+                    self.renderer.invalidate()
+                return
+
+            # Home key - move cursor to start
+            if key.name == "KEY_HOME":
+                focused._cursor_pos = 0
                 self.renderer.invalidate()
                 return
 
-            # Regular character input
+            # End key - move cursor to end
+            if key.name == "KEY_END":
+                focused._cursor_pos = len(value)
+                self.renderer.invalidate()
+                return
+
+            # Regular character input - enter edit mode, insert at cursor
             if not key.is_sequence and key.isprintable():
-                value = getattr(focused, "value", "") or ""
-                focused.value = value + str(key)
+                self.renderer.enter_edit_mode()
+                focused.value = value[:cursor_pos] + str(key) + value[cursor_pos:]
+                focused._cursor_pos = cursor_pos + 1
                 focused._fire_event("change", focused.value)
                 self.renderer.invalidate()
 
@@ -235,27 +360,64 @@ class RawGUIApp:
         element = self.renderer.get_element_at(x, y)
 
         # Handle hover
+        old_hover = getattr(self.renderer, '_hovered', None)
         self.renderer.set_hover(element)
+        if old_hover != element:
+            self.renderer.invalidate()
 
-        # Handle click
-        if hasattr(key, 'name') and 'MOUSE' in str(key.name):
-            if 'RELEASE' not in str(key.name) and element:
-                # Click
-                if element.tag == "button":
-                    self.renderer.focus_element(element)
-                    element._fire_event("click")
-                    self.renderer.invalidate()
-                elif element.tag == "input":
-                    self.renderer.focus_element(element)
-                    self.renderer.invalidate()
+        # Handle click - only on button press (not release)
+        key_name = str(key.name) if key.name else ""
+        is_press = "MOUSE" in key_name and "RELEASE" not in key_name
+
+        if is_press and element:
+            if element.tag == "button":
+                self.renderer.focus_element(element)
+                element._fire_event("click")
+                self.renderer.invalidate()
+            elif element.tag == "input":
+                self.renderer.focus_element(element)
+                self.renderer.invalidate()
+            elif element.tag == "checkbox":
+                self.renderer.focus_element(element)
+                element.toggle()
+                self.renderer.invalidate()
 
     async def _navigate(self, path: str) -> None:
         """Navigate to a page."""
         if not self.client:
             return
 
+        # Preserve focus index for restoration after page rebuild
+        saved_focus_index = self.renderer.focus_index
+
         # Find matching route
         match = router.match(path)
+
+        # Check for implicit root page (NiceGUI compatibility)
+        if not match and path == "/" and app._auto_index_client:
+            # Use elements from auto-index client as implicit root page
+            auto_client = app._auto_index_client
+            roots = [el for el in auto_client.elements.values() if el.parent_slot is None]
+            if roots:
+                self.client.navigate_to(path)
+                # Transfer elements to the actual client
+                for el in list(auto_client.elements.values()):
+                    el.client = self.client
+                    self.client.register_element(el)
+                auto_client.elements.clear()
+
+                if len(roots) == 1:
+                    self._root_element = roots[0]
+                else:
+                    from .elements import Column
+                    wrapper = Column()
+                    for root in roots:
+                        root.move(wrapper)
+                    self._root_element = wrapper
+                self.renderer.schedule_focus_restore(saved_focus_index)
+                self.renderer.invalidate()
+                return
+
         if not match:
             # 404 - create error page
             self.client.clear()
@@ -264,6 +426,7 @@ class RawGUIApp:
                 with Column() as col:
                     Label(f"404 - Page not found: {path}")
                 self._root_element = col
+            self.renderer.schedule_focus_restore(saved_focus_index)
             self.renderer.invalidate()
             return
 
@@ -287,7 +450,26 @@ class RawGUIApp:
                     root.move(wrapper)
                 self._root_element = wrapper
 
+        self.renderer.schedule_focus_restore(saved_focus_index)
         self.renderer.invalidate()
+
+    async def _navigate_back(self) -> None:
+        """Navigate back in history."""
+        if not self.client:
+            return
+
+        prev_path = self.client.navigate_back()
+        if prev_path:
+            await self._navigate(prev_path)
+
+    async def _navigate_forward(self) -> None:
+        """Navigate forward in history."""
+        if not self.client:
+            return
+
+        next_path = self.client.navigate_forward()
+        if next_path:
+            await self._navigate(next_path)
 
     async def _watch_files(self) -> None:
         """Watch for file changes and reload."""

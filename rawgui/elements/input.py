@@ -43,6 +43,9 @@ class Input(DisableableElement, ValueElement[str], Element):
         self.placeholder = placeholder
         self.password = password
 
+        # Cursor position for text editing (0 = before first char)
+        self._cursor_pos: int = len(value)
+
         if on_change:
             self.on_change(on_change)
 

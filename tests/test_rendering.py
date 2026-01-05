@@ -94,7 +94,7 @@ class TestTerminalRenderer:
         assert "Hello World" in output
 
     def test_render_button(self):
-        """Test rendering a button."""
+        """Test rendering a button with inline bracket style."""
         renderer = TerminalRenderer()
 
         with Client() as client:
@@ -102,7 +102,8 @@ class TestTerminalRenderer:
 
         output = renderer.render(btn)
         assert "Click Me" in output
-        assert "[" in output  # Button brackets
+        # Button uses inline brackets: [ text ]
+        assert "[ Click Me ]" in output
 
     def test_render_column_with_children(self):
         """Test rendering a column with children."""

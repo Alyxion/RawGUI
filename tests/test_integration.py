@@ -168,7 +168,7 @@ class TestElementFunctionality:
         assert "Hello World" in output
 
     def test_button_shows_brackets(self):
-        """Test button renders with brackets."""
+        """Test button renders with inline bracket style."""
         from rawgui import ui
         from rawgui.client import Client
         from rawgui.renderer.terminal import TerminalRenderer
@@ -179,6 +179,8 @@ class TestElementFunctionality:
             btn = ui.button("Click")
 
         output = renderer.render(btn)
+        assert "Click" in output
+        # Button uses inline brackets: [ text ]
         assert "[ Click ]" in output
 
     def test_nested_layout(self):

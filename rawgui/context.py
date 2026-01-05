@@ -29,8 +29,21 @@ class Context:
 
     @property
     def client(self) -> Optional["Client"]:
-        """Get the current client for this context."""
-        return _current_client.get()
+        """Get the current client for this context.
+
+        If no explicit client is set, returns the auto-index client
+        for implicit root page behavior (NiceGUI compatibility).
+        """
+        explicit_client = _current_client.get()
+        if explicit_client is not None:
+            return explicit_client
+
+        # Return auto-index client for module-scope elements
+        from .app import app
+        if app._auto_index_client is None:
+            from .client import Client
+            app._auto_index_client = Client()
+        return app._auto_index_client
 
     @client.setter
     def client(self, value: Optional["Client"]) -> None:

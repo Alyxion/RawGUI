@@ -42,8 +42,8 @@ def index():
                 ui.button("+ Increment", on_click=increment).classes("text-green")
 
         ui.label("").classes("")
-        ui.label("Tab between buttons, Enter to activate").classes("text-bright_black")
-        ui.label("Press Escape or Ctrl+C to quit").classes("text-bright_black")
+        ui.label("Arrow keys or Tab to navigate, Space/Enter to activate").classes("text-bright_black")
+        ui.label("Escape or Ctrl+C to quit").classes("text-bright_black")
 
 
 if __name__ == "__main__":

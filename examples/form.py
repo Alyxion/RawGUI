@@ -86,8 +86,9 @@ def index():
                 ui.label(FormState.message).classes(color)
 
         ui.label("").classes("")
-        ui.label("Tab to navigate, type to enter text").classes("text-bright_black")
-        ui.label("Press Escape or Ctrl+C to quit").classes("text-bright_black")
+        ui.label("Arrow keys or Tab to navigate").classes("text-bright_black")
+        ui.label("Type to edit, Left/Right moves cursor").classes("text-bright_black")
+        ui.label("Escape exits edit mode, Ctrl+C quits").classes("text-bright_black")
 
 
 if __name__ == "__main__":

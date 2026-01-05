@@ -79,7 +79,52 @@ This approach ensures:
 3. No magic lambda functions or scattered conditionals
 4. Future ability to load definitions from JSON/YAML files if needed
 
-### 6. Graphics Rendering
+### 6. Pixel-First Layout Architecture
+
+**CRITICAL ARCHITECTURAL REQUIREMENT**
+
+#### Minimalistic DOM
+
+Build a lightweight HTML DOM-like structure:
+- Each element stores pixel-based position (x, y) and size (width, height)
+- All layout calculations happen in pixel coordinates first
+- Final rendering converts pixels → ASCII character positions
+
+#### Global Scaling Constants
+
+```python
+# 1 ASCII character maps to these pixel dimensions
+CHAR_WIDTH_PX = 12   # 1 column = 12 pixels wide
+CHAR_HEIGHT_PX = 24  # 1 row = 24 pixels tall
+```
+
+#### Pixel-Perfect Alignment Rules
+
+1. **All sizes and paddings MUST be multiples of scaling constants**
+   - Horizontal padding/margin: multiples of `CHAR_WIDTH_PX` (12)
+   - Vertical padding/margin: multiples of `CHAR_HEIGHT_PX` (24)
+   - Element widths: multiples of 12
+   - Element heights: multiples of 24
+
+2. **Clean pixel → ASCII conversion (no remainders)**
+   ```python
+   ascii_col = pixel_x // CHAR_WIDTH_PX   # Always integer result
+   ascii_row = pixel_y // CHAR_HEIGHT_PX  # No fractional positions
+   ```
+
+3. **Nested elements align perfectly**
+   - Parent containers (cards, rows, columns) calculate child positions in pixels
+   - Final coordinates always divide cleanly by scaling constants
+   - Consistent spacing at all nesting depths
+
+#### Benefits
+
+- Pixel-perfect alignment regardless of nesting level
+- Direct comparison possible with browser-rendered NiceGUI
+- Predictable, debuggable layout behavior
+- CSS-like box model semantics
+
+### 7. Graphics Rendering
 
 - Detect terminal capabilities at runtime
 - Prefer RGB halfpixel / sixel graphics where supported
